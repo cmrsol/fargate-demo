@@ -1,0 +1,301 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "ECS Experiment",
+    "Parameters": {
+        "clusterName": {
+            "Description": "Name of the cluster we are creating",
+            "Type": "String"
+        },
+        "acmCertArn": {
+            "Description": "ARN for an ACM cert",
+            "Type": "String"
+        },
+        "fullyQualifidedHostName": {
+            "Description": "Fully qualifided host name",
+            "Type": "String"
+        },
+        "minimumCount": {
+            "Description": "Count of things in the cluster",
+            "Type": "String"
+        },
+        "maximumCount": {
+            "Description": "Max count of things in the cluster",
+            "Type": "String"
+        },
+        "cpuAllocation": {
+            "Description": "CPU request",
+            "Type": "String"
+        },
+        "memoryAllocation": {
+            "Description": "Memory request",
+            "Type": "String"
+        },
+        "taskImage": {
+            "Description": "ECR image to use",
+            "Type": "String"
+        },
+        "hostedZoneId": {
+            "Description": "hostedZoneId",
+            "Type": "String"
+        }
+    },
+    "Resources": {
+        "ECSCluster":{
+            "Type":"AWS::ECS::Cluster",
+            "Properties" : {
+                "ClusterName" : { "Ref": "clusterName" }
+            }
+        },
+        "fargateDemoSecuityGroup" : {
+            "Type" : "AWS::EC2::SecurityGroup",
+            "Properties" : {
+                "GroupDescription" : "Allow ECS connections",
+                "GroupName" : "fargate-demo-host",
+                "VpcId" : {"Fn::ImportValue": "appVPCV1"},
+                "SecurityGroupIngress" : [
+                    { "IpProtocol" : "tcp", "FromPort" : "80", "ToPort" : "80", "CidrIp" : "0.0.0.0/0" },
+                    { "IpProtocol" : "tcp", "FromPort" : "443", "ToPort" : "443", "CidrIp" : "0.0.0.0/0" }
+                ],
+                "SecurityGroupEgress" : [
+                    {
+                        "IpProtocol" : "-1",
+                        "FromPort" : "-1",
+                        "ToPort" : "-1",
+                        "CidrIp" : "0.0.0.0/0"
+                    },
+                    {
+                        "IpProtocol" : "tcp",
+                        "FromPort" : "1",
+                        "ToPort" : "65535",
+                        "CidrIp" : "0.0.0.0/0"
+                    }
+                ]
+            }
+        },
+        "fargateDemoSecuityGroupALBports": {
+            "Type": "AWS::EC2::SecurityGroupIngress",
+            "Properties": {
+                "GroupId": { "Ref":"fargateDemoSecuityGroup" },
+                "IpProtocol": "tcp",
+                "FromPort": "1",
+                "ToPort": "65535",
+                "SourceSecurityGroupId": { "Ref":"fargateDemoSecuityGroup" }
+            }
+        },
+        "cloudwatchLogsGroup": {
+            "Type": "AWS::Logs::LogGroup",
+            "Properties": {
+                "LogGroupName": {
+                    "Fn::Join": [ "-",
+                        [ "ECSLogGroup", { "Ref":"AWS::StackName" } ]
+                    ]
+                },
+            "RetentionInDays": 7
+            }
+        },
+        "taskDefinition": {
+            "Type": "AWS::ECS::TaskDefinition",
+            "Properties": {
+                "ContainerDefinitions": [
+                    {
+                        "Essential": "true",
+                        "Image": { "Ref": "taskImage" },
+                        "LogConfiguration": {
+                            "LogDriver": "awslogs",
+                            "Options": {
+                                "awslogs-group": {
+                                    "Ref": "cloudwatchLogsGroup"
+                                },
+                                "awslogs-region": {
+                                    "Ref": "AWS::Region"
+                                },
+                                "awslogs-stream-prefix": "fargate-demo-app"
+                            }
+                        },
+                        "Name": "fargate-demo-app",
+                        "PortMappings": [
+                            {
+                                "ContainerPort": 80
+                            }
+                        ]
+                    }
+                ],
+                "Cpu": { "Ref": "cpuAllocation" },
+                "ExecutionRoleArn": {"Fn::ImportValue": "fargateDemoRoleArnV1"},
+                "Family": {
+                    "Fn::Join": [
+                        "",
+                        [ { "Ref": "AWS::StackName" }, "-fargate-demo-app" ]
+                    ]
+                },
+                "Memory": { "Ref": "memoryAllocation" },
+                "NetworkMode": "awsvpc",
+                "RequiresCompatibilities" : [ "FARGATE" ],
+                "TaskRoleArn": {"Fn::ImportValue": "fargateDemoRoleArnV1"}
+            }
+        },
+        "fargateDemoALB":{
+            "Type":"AWS::ElasticLoadBalancingV2::LoadBalancer",
+            "Properties":{
+                "Name": "fargateDemoALB",
+                "Scheme":"internet-facing",
+                "LoadBalancerAttributes": [
+                    {
+                        "Key":"idle_timeout.timeout_seconds",
+                        "Value":"30"
+                    }
+                ],
+                "Subnets": [
+                    {"Fn::ImportValue": "publicSubnetOneV1"},
+                    {"Fn::ImportValue": "publicSubnetTwoV1"},
+                    {"Fn::ImportValue": "publicSubnetThreeV1"}
+                ],
+                "SecurityGroups": [ { "Ref":"fargateDemoSecuityGroup" } ]
+            }
+        },
+        "fargateDemoTargetGroup": {
+            "Type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+            "DependsOn": "fargateDemoALB",
+            "Properties": {
+                "HealthCheckIntervalSeconds": 10,
+                "HealthCheckPath": "/",
+                "HealthCheckProtocol": "HTTP",
+                "HealthCheckTimeoutSeconds": 5,
+                "HealthyThresholdCount": 2,
+                "Name": "fargateDemoTargetGroup",
+                "Port": 80,
+                "Protocol": "HTTP",
+                "UnhealthyThresholdCount": 2,
+                "TargetType": "ip",
+                "VpcId": {"Fn::ImportValue": "appVPCV1"}
+            }
+        },
+        "fargateDemoALBListener":{
+            "Type": "AWS::ElasticLoadBalancingV2::Listener",
+            "Properties": {
+                "DefaultActions":[
+                    {
+                        "Type":"forward",
+                        "TargetGroupArn": { "Ref": "fargateDemoTargetGroup" }
+                    }
+                ],
+                "LoadBalancerArn": { "Ref":"fargateDemoALB" },
+                "Port": "443",
+                "Protocol": "HTTPS",
+                "Certificates": [
+                    { "CertificateArn": { "Ref": "acmCertArn" } }
+                ]
+            }
+        },
+        "fargateDemoService":{
+             "Type": "AWS::ECS::Service",
+             "DependsOn": [
+                 "fargateDemoALBListener"
+             ],
+             "Properties": {
+                 "Cluster": { "Ref": "ECSCluster" },
+                 "DesiredCount": { "Ref": "minimumCount" },
+                 "LaunchType": "FARGATE",
+                 "LoadBalancers": [
+                     {
+                         "ContainerName": "fargate-demo-app",
+                         "ContainerPort": "80",
+                         "TargetGroupArn": { "Ref": "fargateDemoTargetGroup" }
+                     }
+                 ],
+                 "NetworkConfiguration":{
+                     "AwsvpcConfiguration":{
+                         "SecurityGroups": [
+                             { "Ref":"fargateDemoSecuityGroup" }
+                         ],
+                         "Subnets":[
+                            {"Fn::ImportValue": "privateSubnetOneV1"},
+                            {"Fn::ImportValue": "privateSubnetTwoV1"},
+                            {"Fn::ImportValue": "privateSubnetThreeV1"}
+                         ]
+                     }
+                 },
+                 "TaskDefinition": { "Ref":"taskDefinition" }
+             }
+        },
+        "fargateDemoServiceScalingTarget": {
+            "Type": "AWS::ApplicationAutoScaling::ScalableTarget",
+            "DependsOn": "fargateDemoService",
+            "Properties": {
+                "MinCapacity": { "Ref": "minimumCount" },
+                "MaxCapacity": { "Ref": "maximumCount" },
+                "ResourceId": {
+                    "Fn::Join": [
+                        "",
+                        [
+                            "service/",
+                            { "Ref": "ECSCluster" }, "/",
+                            { "Fn::GetAtt": [ "fargateDemoService", "Name" ] }
+                        ]
+                    ]
+                },
+                "RoleARN": { "Fn::ImportValue": "fargateDemoRoleArnV1" },
+                "ScalableDimension": "ecs:service:DesiredCount",
+                "ServiceNamespace": "ecs"
+            }
+        },
+        "fargateDemoServiceScalingPolicy": {
+            "Type": "AWS::ApplicationAutoScaling::ScalingPolicy",
+            "Properties": {
+                "PolicyName": "AStepPolicy",
+                "PolicyType": "StepScaling",
+                "ScalingTargetId": {
+                    "Ref": "fargateDemoServiceScalingTarget"
+                },
+                "StepScalingPolicyConfiguration": {
+                    "AdjustmentType": "PercentChangeInCapacity",
+                    "Cooldown": 60,
+                    "MetricAggregationType": "Average",
+                    "StepAdjustments": [
+                        {
+                            "MetricIntervalLowerBound": 0,
+                            "ScalingAdjustment": 200
+                        }
+                    ]
+                }
+            }
+        },
+        "fargateDemoListenerRule": {
+            "Type": "AWS::ElasticLoadBalancingV2::ListenerRule",
+            "DependsOn": "fargateDemoALBListener",
+            "Properties": {
+                "Actions": [
+                    {
+                        "TargetGroupArn": { "Ref": "fargateDemoTargetGroup" },
+                        "Type": "forward"
+                    }
+                ],
+                "Conditions": [
+                    {
+                        "Field": "path-pattern",
+                        "Values": [
+                            "/"
+                        ]
+                    }
+                ],
+                "ListenerArn": {
+                    "Ref": "fargateDemoALBListener"
+                },
+                "Priority": 1
+            }
+        },
+        "fargateDemoPublicDNSRecord": {
+            "Type": "AWS::Route53::RecordSet",
+            "DependsOn": ["fargateDemoALB"],
+            "Properties": {
+                "HostedZoneId": { "Ref": "hostedZoneId" },
+                "Name": { "Ref": "fullyQualifidedHostName" },
+                "Type": "CNAME",
+                "TTL": "60",
+                "ResourceRecords": [
+                    {"Fn::GetAtt": ["fargateDemoALB", "DNSName"]}
+                ]
+            }
+    	}
+    }
+}
