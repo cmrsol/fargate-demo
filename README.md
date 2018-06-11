@@ -1,4 +1,4 @@
-## Fargate Demo Infrastructure:
+## Fargate Demo Application:
 This repo contains a CloudFormation stack to build a simple Fargate stack. The
 stack simply runs a container that is running a silly little web site. To use
 for another purpose simply change the value for ```taskImage``` in the ```config.ini```
